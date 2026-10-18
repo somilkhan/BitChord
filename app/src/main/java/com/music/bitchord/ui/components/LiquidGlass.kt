@@ -15,7 +15,9 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.shape.CornerBasedShape
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.compositionLocalOf
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -25,6 +27,7 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.music.bitchord.data.settings.AppSettings
 import com.music.bitchord.ui.components.backdrop.Backdrop
+import com.music.bitchord.ui.components.backdrop.backdrops.LayerBackdrop
 import com.music.bitchord.ui.components.backdrop.drawBackdrop
 import com.music.bitchord.ui.components.backdrop.effects.blur
 import com.music.bitchord.ui.components.backdrop.effects.colorControls
@@ -40,6 +43,15 @@ val LocalLiquidGlassEnabled = staticCompositionLocalOf { false }
 
 /** The backdrop content (app UI) that a liquid glass surface samples from. */
 val LocalAppBackdrop = staticCompositionLocalOf<Backdrop> { error("No AppBackdrop provided") }
+
+/**
+ * Where a [liquidGlass] surface composed under it also records the glass it
+ * draws — the sampled, blurred and tinted backdrop, without its rim or shadow —
+ * so a lens above it can refract that surface rather than the page behind it.
+ * The tab bar's travelling selection pill is the one reader; see
+ * [com.music.bitchord.ui.components.floatingtabbar.GlassSelectionPill].
+ */
+internal val LocalGlassExport = compositionLocalOf<LayerBackdrop?> { null }
 
 /**
  * The backdrop blur pipeline requires [android.graphics.RenderEffect] on a
@@ -141,6 +153,27 @@ fun Modifier.lightweightLiquidGlass(
 }
 
 /**
+ * Just the rim of liquid glass — the directional [Highlight] that catches the
+ * light along a glass edge — for a control that keeps its own fill.
+ *
+ * Over a flat, stable page the blur and lens of [liquidGlass] would sample a
+ * single colour and change nothing a reader could see; the rim is the part
+ * that reads as glass. No backdrop capture, so it costs a stroke. Nothing at
+ * all while Liquid Glass is off or unsupported.
+ */
+@Composable
+fun Modifier.liquidGlassRim(shape: CornerBasedShape): Modifier {
+    if (!LocalLiquidGlassEnabled.current || !isGlassSupported()) return this
+    val shapeProvider = remember(shape) { ShapeProvider { shape } }
+    return then(
+        HighlightElement(
+            shapeProvider = shapeProvider,
+            highlight = { Highlight.Default },
+        ),
+    )
+}
+
+/**
  * Renders this composable as a liquid glass surface sampling [LocalAppBackdrop]:
  * vibrancy, blur and lens refraction, then a theme-adaptive surface tint (light
  * glass on light theme, dark on dark). Returns the receiver unchanged on devices
@@ -165,6 +198,7 @@ fun Modifier.liquidGlass(shape: CornerBasedShape): Modifier {
             .border(GLASS_EDGE_WIDTH, GLASS_EDGE_COLOR, shape)
     }
     val backdrop = LocalAppBackdrop.current
+    val exportedBackdrop = LocalGlassExport.current
     val density = LocalDensity.current
     val blurPx = with(density) { BLUR_RADIUS_DP.dp.toPx() } * GLASS_RESOLUTION_SCALE
     val lensHeightPx = with(density) { (LENS_HEIGHT * LENS_MAX_DP).dp.toPx() } * GLASS_RESOLUTION_SCALE
@@ -195,6 +229,7 @@ fun Modifier.liquidGlass(shape: CornerBasedShape): Modifier {
         onDrawSurface = {
             drawRect(color = surfaceTintColor.copy(alpha = SURFACE_OPACITY), size = size)
         },
+        exportedBackdrop = exportedBackdrop,
         backdropScale = GLASS_RESOLUTION_SCALE,
     )
 }

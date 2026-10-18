@@ -4,6 +4,8 @@ import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.gestures.snapping.rememberSnapFlingBehavior
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -228,7 +230,7 @@ fun ReplayScreen(
                             Note(
                                 text = stringResource(R.string.genres_pending),
                                 dark = dark,
-                                modifier = Modifier.padding(horizontal = PAGE_GUTTER + 10.dp),
+                                modifier = Modifier.padding(horizontal = PAGE_GUTTER + 4.dp),
                             )
                         }
                     }
@@ -255,7 +257,7 @@ fun ReplayScreen(
 private fun Heading(state: ReplayState, onPeriodChange: (ReplayPeriod) -> Unit, dark: Boolean) {
     val context = LocalContext.current
     val textColor = if (dark) Color.White else Color.Black
-    Column(Modifier.padding(horizontal = PAGE_GUTTER + 10.dp)) {
+    Column(Modifier.padding(horizontal = PAGE_GUTTER + 4.dp)) {
         Spacer(Modifier.height(48.dp))
         Text(
             text = stringResource(R.string.replay),
@@ -275,9 +277,9 @@ private fun Heading(state: ReplayState, onPeriodChange: (ReplayPeriod) -> Unit, 
 }
 
 /**
- * The three stretches a Replay can cover.
+ * The four stretches a Replay can cover.
  *
- * Months and years rather than a date range, because that is the granularity the
+ * Weeks and months rather than a date range, because that is the granularity the
  * listening is actually kept at — see [com.music.bitchord.data.stats.ListeningStats].
  * A "last 30 days" chip would have to be answered from monthly totals, which
  * would make it a lie for the first thirty days of every month.
@@ -324,6 +326,7 @@ private fun PeriodPicker(selected: ReplayPeriod, onSelect: (ReplayPeriod) -> Uni
  * where each half of Replay belongs — but it is defined alongside the page it
  * summarises, because the two have to keep saying the same thing.
  */
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 internal fun ReplayCardRow(
     cards: List<ReplayHeroCard>,
@@ -331,12 +334,15 @@ internal fun ReplayCardRow(
     memberSince: String?,
     onCardClick: (ReplayStoryPage) -> Unit,
     modifier: Modifier = Modifier,
-    contentPadding: PaddingValues = PaddingValues(horizontal = PAGE_GUTTER + 10.dp),
+    contentPadding: PaddingValues = PaddingValues(horizontal = PAGE_GUTTER + 4.dp),
 ) {
+    val rowState = rememberLazyListState()
     LazyRow(
         modifier = modifier,
+        state = rowState,
         contentPadding = contentPadding,
         horizontalArrangement = Arrangement.spacedBy(12.dp),
+        flingBehavior = rememberSnapFlingBehavior(lazyListState = rowState),
     ) {
         items(cards, key = { it.label }) { card ->
             ReplayCreditCard(
@@ -383,7 +389,7 @@ private fun ReplayActionRow(icon: ImageVector, label: String, dark: Boolean, onC
     val textColor = if (dark) Color.White else Color.Black
     Row(
         Modifier
-            .padding(horizontal = PAGE_GUTTER + 10.dp, vertical = 18.dp)
+            .padding(horizontal = PAGE_GUTTER + 4.dp, vertical = 18.dp)
             .fillMaxWidth()
             .clip(RoundedCornerShape(14.dp))
             .background(textColor.copy(alpha = 0.12f))
@@ -440,8 +446,8 @@ private fun SectionTitle(text: String, dark: Boolean) {
         fontWeight = FontWeight.W800,
         color = textColor,
         modifier = Modifier.padding(
-            start = PAGE_GUTTER + 10.dp,
-            end = PAGE_GUTTER + 10.dp,
+            start = PAGE_GUTTER + 4.dp,
+            end = PAGE_GUTTER + 4.dp,
             top = 8.dp,
             bottom = 10.dp,
         ),
@@ -457,7 +463,7 @@ private fun ReplayChartRow(row: ReplayRow, circular: Boolean, dark: Boolean, onC
         Modifier
             .fillMaxWidth()
             .clickable(onClick = onClick)
-            .padding(horizontal = PAGE_GUTTER + 10.dp, vertical = 7.dp),
+            .padding(horizontal = PAGE_GUTTER + 4.dp, vertical = 7.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         RankBadge(row.rank, AccentRed)
@@ -505,7 +511,7 @@ private fun ReplayChartRow(row: ReplayRow, circular: Boolean, dark: Boolean, onC
 @Composable
 private fun Habits(summary: ReplaySummary, dark: Boolean) {
     val context = LocalContext.current
-    Column(Modifier.padding(horizontal = PAGE_GUTTER + 10.dp)) {
+    Column(Modifier.padding(horizontal = PAGE_GUTTER + 4.dp)) {
         SectionTitleInline(stringResource(R.string.listening_shape), dark)
         Spacer(Modifier.height(4.dp))
         Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -603,6 +609,7 @@ private fun EmptyReplay(period: ReplayPeriod, dark: Boolean) {
         Spacer(Modifier.height(8.dp))
         Text(
             text = when (period) {
+                ReplayPeriod.THIS_WEEK -> stringResource(R.string.not_enough_this_week)
                 ReplayPeriod.THIS_MONTH -> stringResource(R.string.not_enough_this_month)
                 else -> stringResource(R.string.replay_empty_description)
             },

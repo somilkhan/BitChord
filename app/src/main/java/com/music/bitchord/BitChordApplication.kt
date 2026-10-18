@@ -10,16 +10,26 @@ import coil3.disk.DiskCache
 import coil3.disk.directory
 import coil3.memory.MemoryCache
 import coil3.request.crossfade
+import coil3.svg.SvgDecoder
+import coil3.network.okhttp.OkHttpNetworkFetcherFactory
+import okhttp3.OkHttpClient
 import com.music.bitchord.auth.AuthStore
+import com.music.bitchord.data.DebugLog
+import com.music.bitchord.data.lyrics.LyricsTranslation
+import androidx.appcompat.app.AppCompatDelegate
+import com.music.bitchord.ui.player.AndroidPlayerHost
+import com.music.bitchord.ui.player.PlayerPlatform
 import com.music.bitchord.data.canvas.CanvasCache
 import com.music.bitchord.data.smb.SmbCoverFetcher
 import com.music.bitchord.data.webdav.WebDavCoilAuth
 import com.music.bitchord.data.canvas.SpotifyToken
+import com.music.bitchord.data.spotify.SpotifyLibrary
 import com.music.bitchord.playback.AudioCache
 import com.music.bitchord.playback.LastPlayed
+import com.music.bitchord.playback.BoundedContextPersistence
 import com.music.bitchord.playback.OriginalVersion
 import com.music.bitchord.data.innertube.Innertube
-import com.music.bitchord.data.innertube.InnerTubeXResolver
+import com.music.bitchord.data.innertube.AndroidStreamHooks
 import com.music.bitchord.data.listentogether.ListenTogether
 import com.music.bitchord.data.scrobbling.LastFM
 import com.music.bitchord.data.settings.AppSettings
@@ -38,6 +48,32 @@ class BitChordApplication : Application(), SingletonImageLoader.Factory {
     @OptIn(UnstableApi::class)
     override fun onCreate() {
         super.onCreate()
+        // The player is drawn by the shared UI module; this is what it reads
+        // underneath — settings, the Canvas decoder, outputs, the party.
+        AndroidStreamHooks.installEarly()
+        PlayerPlatform.install(AndroidPlayerHost(this))
+        com.music.bitchord.ui.AppUi.install(com.music.bitchord.ui.AndroidAppUiHost)
+        // The shared data layer (lyrics, the YouTube Music client) logs to
+        // logcat on debug builds only, as the app's own DebugLog always has.
+        if (BuildConfig.DEBUG) {
+            DebugLog.sink = DebugLog.Sink { level, tag, message, error ->
+                when (level) {
+                    'D' -> android.util.Log.d(tag, message, error)
+                    'I' -> android.util.Log.i(tag, message, error)
+                    'W' -> android.util.Log.w(tag, message, error)
+                    else -> android.util.Log.e(tag, message, error)
+                }
+            }
+        }
+        // The Spotify library and import live in the shared module; the tokens are the WebView's.
+        SpotifyLibrary.auth = SpotifyLibrary.Auth {
+            SpotifyToken.accessToken()?.let { SpotifyLibrary.Tokens(it, SpotifyToken.clientToken()) }
+        }
+        // The per-app language picker, which YouTube Music's `hl` follows.
+        // Full tag (zh-Hant / zh-Hans preserved); Innertube maps to hl/gl.
+        Innertube.appLanguage = { AppCompatDelegate.getApplicationLocales().get(0)?.toLanguageTag() }
+        migrateScriptOnlyAppLocale()
+        LyricsTranslation.cacheDir = cacheDir
         // PlaybackService shares this process, so seeding the cookie here means
         // stream resolution is authenticated from the first play onwards.
         authStore = AuthStore(this)
@@ -50,7 +86,7 @@ class BitChordApplication : Application(), SingletonImageLoader.Factory {
         // nothing that runs after startup can see any of them half open.
         val backgroundInit = thread(name = "startup-init") {
             SourceRegistry.init(this)
-            InnerTubeXResolver.init(this)
+            AndroidStreamHooks.initInnerTubeX(this)
             // Its own directory: canvas clips are looping video, not audio, and
             // belong in a cache AudioCache's own limit and eviction policy were
             // never sized for. See CanvasCache's doc for why this one exists at
@@ -80,6 +116,9 @@ class BitChordApplication : Application(), SingletonImageLoader.Factory {
             CoroutineScope(Dispatchers.IO).launch { Innertube.ensureSessionScope() }
         }
         AppSettings.init(this, authStore)
+        // Before anything resolves a track: an addon with `checkValidLossless`
+        // is gated on this, and the gate reads "no" until it has looked.
+        com.music.bitchord.playback.audio.LosslessOutput.init(this)
         // Restores a party this device is still a member of, so a process death
         // mid-session is something the rest of the party never sees. The socket
         // and the clock offset are not restored — both are re-established on
@@ -87,6 +126,7 @@ class BitChordApplication : Application(), SingletonImageLoader.Factory {
         ListenTogether.init(this)
         SearchHistory.init(this)
         LastPlayed.init(this)
+        BoundedContextPersistence.init(this)
         com.music.bitchord.playback.PartyPersonalQueueStash.init(this)
         // Which tracks the listener has reverted to YouTube's own upload. Read
         // by [Song.toMediaItem], so it has to be open before the restart
@@ -123,7 +163,32 @@ class BitChordApplication : Application(), SingletonImageLoader.Factory {
         }
         // Initialize LastFM with saved settings if available
         initLastfm()
+        // The public "apps open right now" count; see Presence.
+        com.music.bitchord.data.presence.AndroidPresence.install(this)
         backgroundInit.join()
+    }
+
+    /**
+     * Coil's own transport, separate from [Http][com.music.bitchord.data.Http]'s
+     * playback-tuned client.
+     *
+     * Wikimedia (which serves signature art) answers generic clients with
+     * HTTP 403 under its User-Agent policy, so every image request carries an
+     * identifying agent. Anything else falls through to Coil's own fetchers.
+     */
+    private val coilHttpClient: OkHttpClient by lazy {
+        OkHttpClient.Builder()
+            .addInterceptor { chain ->
+                chain.proceed(
+                    chain.request().newBuilder()
+                        .header(
+                            "User-Agent",
+                            "BitChord/${BuildConfig.VERSION_NAME} (Android; +https://github.com/kushagrasinghx/BitChord)",
+                        )
+                        .build(),
+                )
+            }
+            .build()
     }
 
     /**
@@ -146,6 +211,11 @@ class BitChordApplication : Application(), SingletonImageLoader.Factory {
                 // Covers filed on the SMB share; anything else falls
                 // through to Coil's own fetchers. See SmbCoverFetcher.
                 add(SmbCoverFetcher.Factory())
+                // Artist signatures are usually SVG, which Coil can't
+                // decode without this. See ArtistSignatureRepository.
+                add(SvgDecoder.Factory())
+                // Wikimedia 403s Coil's default client; see [coilHttpClient].
+                add(OkHttpNetworkFetcherFactory(callFactory = { coilHttpClient }))
             }
             .memoryCache {
                 MemoryCache.Builder()
@@ -181,5 +251,27 @@ class BitChordApplication : Application(), SingletonImageLoader.Factory {
     companion object {
         lateinit var authStore: AuthStore
             private set
+
+        /**
+         * One-time move from region-less script tags to regional ones.
+         *
+         * Early builds of the Simplified/Traditional picker stored `zh-Hant` /
+         * `zh-Hans`. Android Views resolve those (script qualifiers), but the
+         * shared Compose resources only match language + region — so Settings
+         * read Traditional while the player read Simplified. Regional tags
+         * match on both systems. Bare `zh` is left alone: it historically
+         * meant Simplified.
+         */
+        private fun migrateScriptOnlyAppLocale() {
+            val current = AppCompatDelegate.getApplicationLocales().get(0)?.toLanguageTag()
+            val replacement = when (current) {
+                "zh-Hant" -> "zh-TW"
+                "zh-Hans" -> "zh-CN"
+                else -> return
+            }
+            AppCompatDelegate.setApplicationLocales(
+                androidx.core.os.LocaleListCompat.forLanguageTags(replacement),
+            )
+        }
     }
 }

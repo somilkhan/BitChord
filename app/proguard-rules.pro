@@ -28,6 +28,11 @@
 -keep class net.engio.mbassy.** { *; }
 -keep class org.bouncycastle.** { *; }
 -keepclasseswithmembernames,includedescriptorclasses class * { native <methods>; }
+# The vendored FFmpeg extension's JNI calls back into this by name to grow
+# its output buffer (native/ffmpeg/ffmpeg_jni.cc, JNI_OnLoad).
+-keep,includedescriptorclasses class androidx.media3.decoder.ffmpeg.FfmpegAudioDecoder {
+    private java.nio.ByteBuffer growOutputBuffer(androidx.media3.decoder.SimpleDecoderOutputBuffer, int);
+}
 
 # ---- Serialization --------------------------------------------------------------
 # protobuf-lite reads its generated messages' fields reflectively.
@@ -56,3 +61,13 @@
 -dontwarn javax.script.**
 -dontwarn jdk.dynalink.**
 -dontwarn org.ietf.jgss.**
+
+# ---- "BitChord for Wear OS": the ADB client that installs the watch app ----
+# libadb-android drives the pairing and transport through Conscrypt and SPAKE2,
+# both of which reach their native halves by name.
+-keep class io.github.muntashirakon.adb.** { *; }
+-keep class org.conscrypt.** { *; }
+-keep class com.android.org.conscrypt.** { *; }
+-dontwarn org.conscrypt.**
+-dontwarn com.android.org.conscrypt.**
+-dontwarn io.github.muntashirakon.adb.**
